@@ -19,6 +19,30 @@ from utils.post_process import ctdet_post_process
 from .base_trainer import BaseTrainer
 
 
+class ArcFaceClassifier(nn.Module):
+    """Additive angular-margin classifier used by UAVS-MOT."""
+    def __init__(self, embedding_dim, num_classes, scale=32.0, margin=0.5):
+        super(ArcFaceClassifier, self).__init__()
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_dim))
+        nn.init.xavier_uniform_(self.weight)
+        self.scale = scale
+        self.margin = margin
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+        self.threshold = math.cos(math.pi - margin)
+        self.margin_correction = math.sin(math.pi - margin) * margin
+
+    def forward(self, embeddings, targets):
+        cosine = F.linear(F.normalize(embeddings), F.normalize(self.weight))
+        sine = torch.sqrt(torch.clamp(1.0 - cosine.pow(2), min=1e-7))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.threshold, phi,
+                          cosine - self.margin_correction)
+        one_hot = torch.zeros_like(cosine)
+        one_hot.scatter_(1, targets.long().view(-1, 1), 1.0)
+        return self.scale * (one_hot * phi + (1.0 - one_hot) * cosine)
+
+
 class MotLoss(torch.nn.Module):
     def __init__(self, opt):
         super(MotLoss, self).__init__()
@@ -31,13 +55,16 @@ class MotLoss(torch.nn.Module):
         self.opt = opt
         self.emb_dim = opt.reid_dim
         self.nID = opt.nID
-        self.classifier = nn.Linear(self.emb_dim, self.nID)
+        self.IDLoss = nn.CrossEntropyLoss(ignore_index=-1)
+        self.arcface = ArcFaceClassifier(
+            self.emb_dim, self.nID, opt.arcface_scale, opt.arcface_margin) \
+            if opt.id_loss == 'arcface' else None
+        self.classifier = None if self.arcface is not None else nn.Linear(self.emb_dim, self.nID)
         if opt.id_loss == 'focal':
             torch.nn.init.normal_(self.classifier.weight, std=0.01)
             prior_prob = 0.01
             bias_value = -math.log((1 - prior_prob) / prior_prob)
             torch.nn.init.constant_(self.classifier.bias, bias_value)
-        self.IDLoss = nn.CrossEntropyLoss(ignore_index=-1)
         self.emb_scale = math.sqrt(2) * math.log(self.nID - 1)
         self.s_det = nn.Parameter(-1.85 * torch.ones(1))
         self.s_id = nn.Parameter(-1.05 * torch.ones(1))
@@ -63,19 +90,26 @@ class MotLoss(torch.nn.Module):
             if opt.id_weight > 0:
                 id_head = _tranpose_and_gather_feat(output['id'], batch['ind'])
                 id_head = id_head[batch['reg_mask'] > 0].contiguous()
-                id_head = self.emb_scale * F.normalize(id_head)
                 id_target = batch['ids'][batch['reg_mask'] > 0]
-
-                id_output = self.classifier(id_head).contiguous()
-                if self.opt.id_loss == 'focal':
-                    id_target_one_hot = id_output.new_zeros((id_head.size(0), self.nID)).scatter_(1,
-                                                                                                  id_target.long().view(
-                                                                                                      -1, 1), 1)
-                    id_loss += sigmoid_focal_loss_jit(id_output, id_target_one_hot,
-                                                      alpha=0.25, gamma=2.0, reduction="sum"
-                                                      ) / id_output.size(0)
-                else:
+                valid = id_target >= 0
+                id_head = id_head[valid]
+                id_target = id_target[valid]
+                if id_head.numel() == 0:
+                    continue
+                if self.opt.id_loss == 'arcface':
+                    id_output = self.arcface(id_head, id_target).contiguous()
                     id_loss += self.IDLoss(id_output, id_target)
+                else:
+                    id_head = self.emb_scale * F.normalize(id_head)
+                    id_output = self.classifier(id_head).contiguous()
+                    if self.opt.id_loss == 'focal':
+                        id_target_one_hot = id_output.new_zeros((id_head.size(0), self.nID)).scatter_(
+                            1, id_target.long().view(-1, 1), 1)
+                        id_loss += sigmoid_focal_loss_jit(
+                            id_output, id_target_one_hot, alpha=0.25,
+                            gamma=2.0, reduction="sum") / id_output.size(0)
+                    else:
+                        id_loss += self.IDLoss(id_output, id_target)
 
         det_loss = opt.hm_weight * hm_loss + opt.wh_weight * wh_loss + opt.off_weight * off_loss
         if opt.multi_loss == 'uncertainty':

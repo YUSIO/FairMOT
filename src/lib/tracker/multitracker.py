@@ -28,7 +28,7 @@ class STrack(BaseTrack):
     def __init__(self, tlwh, score, temp_feat, buffer_size=30):
 
         # wait activate
-        self._tlwh = np.asarray(tlwh, dtype=np.float)
+        self._tlwh = np.asarray(tlwh, dtype=np.float32)
         self.kalman_filter = None
         self.mean, self.covariance = None, None
         self.is_activated = False
@@ -176,7 +176,11 @@ class JDETracker(object):
         else:
             opt.device = torch.device('cpu')
         print('Creating model...')
-        self.model = create_model(opt.arch, opt.heads, opt.head_conv)
+        self.model = create_model(
+            opt.arch, opt.heads, opt.head_conv,
+            dla_pretrained=opt.dla_pretrained,
+            use_coordinate_attention=opt.use_coordinate_attention,
+            ca_reduction=opt.ca_reduction)
         self.model = load_model(self.model, opt.load_model)
         self.model = self.model.to(opt.device)
         self.model.eval()
@@ -375,6 +379,138 @@ class JDETracker(object):
         logger.debug('Removed: {}'.format([track.track_id for track in removed_stracks]))
 
         return output_stracks
+
+
+class UAVSMOTTracker(JDETracker):
+    """UAVS-MOT's paper-described FairMOT/Byte two-stage association.
+
+    First-stage high-score matching uses a configurable equal-weight blend of
+    cosine ReID distance and IoU distance, while both stages reject IoU below
+    ``uavs_iou_gate``.  The paper fixes the score and IoU gates but does not
+    disclose a fusion weight or high-stage cost limit; they are intentionally
+    CLI parameters and must be frozen in the run manifest.
+    """
+    def __init__(self, opt, frame_rate=30):
+        super(UAVSMOTTracker, self).__init__(opt, frame_rate=frame_rate)
+        if not 0.0 <= opt.uavs_low_thresh < opt.uavs_high_thresh <= 1.0:
+            raise ValueError('expected 0 <= low < high <= 1')
+        if not 0.0 <= opt.uavs_iou_gate <= 1.0:
+            raise ValueError('uavs_iou_gate must be in [0, 1]')
+        if not 0.0 <= opt.uavs_app_weight <= 1.0:
+            raise ValueError('uavs_app_weight must be in [0, 1]')
+
+    def _decode_detections(self, im_blob, img0):
+        width, height = img0.shape[1], img0.shape[0]
+        inp_height, inp_width = im_blob.shape[2], im_blob.shape[3]
+        meta = {
+            'c': np.array([width / 2., height / 2.], dtype=np.float32),
+            's': max(float(inp_width) / float(inp_height) * height, width),
+            'out_height': inp_height // self.opt.down_ratio,
+            'out_width': inp_width // self.opt.down_ratio,
+        }
+        with torch.no_grad():
+            output = self.model(im_blob)[-1]
+            hm = output['hm'].sigmoid_()
+            wh = output['wh']
+            id_feature = F.normalize(output['id'], dim=1)
+            reg = output['reg'] if self.opt.reg_offset else None
+            dets, inds = mot_decode(hm, wh, reg=reg, ltrb=self.opt.ltrb,
+                                    K=self.opt.K)
+            id_feature = _tranpose_and_gather_feat(id_feature, inds)
+            id_feature = id_feature.squeeze(0).cpu().numpy()
+        dets = self.merge_outputs([self.post_process(dets, meta)])[1]
+        remain = dets[:, 4] > self.opt.uavs_low_thresh
+        dets, id_feature = dets[remain], id_feature[remain]
+        return [STrack(STrack.tlbr_to_tlwh(tlbr[:4]), tlbr[4], feature, 30)
+                for tlbr, feature in zip(dets[:, :5], id_feature)]
+
+    def _update_matched(self, matches, tracks, detections, activated, refound):
+        for track_index, det_index in matches:
+            track = tracks[track_index]
+            detection = detections[det_index]
+            if track.state == TrackState.Tracked:
+                track.update(detection, self.frame_id)
+                activated.append(track)
+            else:
+                track.re_activate(detection, self.frame_id, new_id=False)
+                refound.append(track)
+
+    def update(self, im_blob, img0):
+        self.frame_id += 1
+        activated, refound, newly_lost, removed = [], [], [], []
+        detections = self._decode_detections(im_blob, img0)
+        high_detections = [det for det in detections
+                           if det.score > self.opt.uavs_high_thresh]
+        low_detections = [det for det in detections
+                          if det.score <= self.opt.uavs_high_thresh]
+
+        unconfirmed = []
+        tracked = []
+        for track in self.tracked_stracks:
+            (tracked if track.is_activated else unconfirmed).append(track)
+
+        pool = joint_stracks(tracked, self.lost_stracks)
+        STrack.multi_predict(pool)
+
+        # Stage 1: high-score detections; ReID and IoU are jointly used.
+        iou_cost = matching.iou_distance(pool, high_detections)
+        app_cost = matching.embedding_distance(pool, high_detections)
+        fused_cost = (self.opt.uavs_app_weight * app_cost +
+                      (1.0 - self.opt.uavs_app_weight) * iou_cost)
+        fused_cost[iou_cost > 1.0 - self.opt.uavs_iou_gate] = np.inf
+        matches, unmatched_pool, unmatched_high = matching.linear_assignment(
+            fused_cost, thresh=self.opt.uavs_high_match_thresh)
+        self._update_matched(matches, pool, high_detections, activated, refound)
+
+        # Stage 2: unmatched tracked tracks accept low-score detections by IoU.
+        remaining_tracked = [pool[index] for index in unmatched_pool
+                             if pool[index].state == TrackState.Tracked]
+        iou_cost = matching.iou_distance(remaining_tracked, low_detections)
+        matches, unmatched_tracked, _ = matching.linear_assignment(
+            iou_cost, thresh=1.0 - self.opt.uavs_iou_gate)
+        self._update_matched(matches, remaining_tracked, low_detections,
+                             activated, refound)
+        for index in unmatched_tracked:
+            track = remaining_tracked[index]
+            track.mark_lost()
+            newly_lost.append(track)
+
+        # FairMOT/Byte confirmation: only remaining high-score detections can
+        # confirm a one-frame tentative track; low-score detections never birth.
+        remaining_high = [high_detections[index] for index in unmatched_high]
+        iou_cost = matching.iou_distance(unconfirmed, remaining_high)
+        matches, unmatched_unconfirmed, unmatched_high = matching.linear_assignment(
+            iou_cost, thresh=1.0 - self.opt.uavs_iou_gate)
+        for track_index, det_index in matches:
+            unconfirmed[track_index].update(remaining_high[det_index], self.frame_id)
+            activated.append(unconfirmed[track_index])
+        for index in unmatched_unconfirmed:
+            track = unconfirmed[index]
+            track.mark_removed()
+            removed.append(track)
+
+        for index in unmatched_high:
+            track = remaining_high[index]
+            if track.score >= self.opt.uavs_track_thresh:
+                track.activate(self.kalman_filter, self.frame_id)
+                activated.append(track)
+
+        for track in self.lost_stracks:
+            if self.frame_id - track.end_frame > self.max_time_lost:
+                track.mark_removed()
+                removed.append(track)
+
+        self.tracked_stracks = [track for track in self.tracked_stracks
+                                if track.state == TrackState.Tracked]
+        self.tracked_stracks = joint_stracks(self.tracked_stracks, activated)
+        self.tracked_stracks = joint_stracks(self.tracked_stracks, refound)
+        self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
+        self.lost_stracks.extend(newly_lost)
+        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
+        self.removed_stracks.extend(removed)
+        self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(
+            self.tracked_stracks, self.lost_stracks)
+        return [track for track in self.tracked_stracks if track.is_activated]
 
 
 def joint_stracks(tlista, tlistb):

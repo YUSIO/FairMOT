@@ -25,11 +25,19 @@ _model_factory = {
   'yolo': get_pose_net_yolo
 }
 
-def create_model(arch, heads, head_conv):
+def create_model(arch, heads, head_conv, dla_pretrained=False,
+                 use_coordinate_attention=False, ca_reduction=32):
   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
   arch = arch[:arch.find('_')] if '_' in arch else arch
   get_model = _model_factory[arch]
-  model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
+  if arch == 'dla':
+    model = get_model(
+      num_layers=num_layers, heads=heads, head_conv=head_conv,
+      pretrained=dla_pretrained,
+      use_coordinate_attention=use_coordinate_attention,
+      ca_reduction=ca_reduction)
+  else:
+    model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
   return model
 
 def load_model(model, model_path, optimizer=None, resume=False, 
@@ -97,4 +105,3 @@ def save_model(path, epoch, model, optimizer=None):
   if not (optimizer is None):
     data['optimizer'] = optimizer.state_dict()
   torch.save(data, path)
-

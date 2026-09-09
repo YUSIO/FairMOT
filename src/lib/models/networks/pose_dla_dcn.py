@@ -18,6 +18,37 @@ from dcn_v2 import DCN
 BN_MOMENTUM = 0.1
 logger = logging.getLogger(__name__)
 
+
+class CoordinateAttention(nn.Module):
+    """Coordinate Attention placed after DLA encoder levels 0 and 1.
+
+    The paper specifies the block placement but not the reduction ratio. The
+    caller records the selected value; ``32`` is the standard CA default.
+    """
+    def __init__(self, channels, reduction=32):
+        super(CoordinateAttention, self).__init__()
+        hidden_channels = max(8, channels // reduction)
+        self.conv1 = nn.Conv2d(channels, hidden_channels, kernel_size=1,
+                               stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(hidden_channels)
+        self.act = nn.ReLU(inplace=True)
+        self.conv_h = nn.Conv2d(hidden_channels, channels, kernel_size=1,
+                                stride=1, padding=0)
+        self.conv_w = nn.Conv2d(hidden_channels, channels, kernel_size=1,
+                                stride=1, padding=0)
+
+    def forward(self, x):
+        _, _, height, width = x.size()
+        x_h = F.adaptive_avg_pool2d(x, (height, 1))
+        x_w = F.adaptive_avg_pool2d(x, (1, width)).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.act(self.bn1(self.conv1(y)))
+        y_h, y_w = torch.split(y, [height, width], dim=2)
+        y_w = y_w.permute(0, 1, 3, 2)
+        a_h = torch.sigmoid(self.conv_h(y_h))
+        a_w = torch.sigmoid(self.conv_w(y_w))
+        return x * a_h * a_w
+
 def get_model_url(data='imagenet', name='dla34', hash='ba72cf86'):
     return join('http://dl.yf.io/dla/models', data, '{}-{}.pth'.format(name, hash))
 
@@ -223,7 +254,8 @@ class Tree(nn.Module):
 
 class DLA(nn.Module):
     def __init__(self, levels, channels, num_classes=1000,
-                 block=BasicBlock, residual_root=False, linear_root=False):
+                 block=BasicBlock, residual_root=False, linear_root=False,
+                 use_coordinate_attention=False, ca_reduction=32):
         super(DLA, self).__init__()
         self.channels = channels
         self.num_classes = num_classes
@@ -236,6 +268,10 @@ class DLA(nn.Module):
             channels[0], channels[0], levels[0])
         self.level1 = self._make_conv_level(
             channels[0], channels[1], levels[1], stride=2)
+        self.ca_level0 = CoordinateAttention(channels[0], ca_reduction) \
+            if use_coordinate_attention else Identity()
+        self.ca_level1 = CoordinateAttention(channels[1], ca_reduction) \
+            if use_coordinate_attention else Identity()
         self.level2 = Tree(levels[2], block, channels[1], channels[2], 2,
                            level_root=False,
                            root_residual=residual_root)
@@ -288,6 +324,10 @@ class DLA(nn.Module):
         x = self.base_layer(x)
         for i in range(6):
             x = getattr(self, 'level{}'.format(i))(x)
+            if i == 0:
+                x = self.ca_level0(x)
+            elif i == 1:
+                x = self.ca_level1(x)
             y.append(x)
         return y
 
@@ -426,12 +466,16 @@ class Interpolate(nn.Module):
 
 class DLASeg(nn.Module):
     def __init__(self, base_name, heads, pretrained, down_ratio, final_kernel,
-                 last_level, head_conv, out_channel=0):
+                 last_level, head_conv, out_channel=0,
+                 use_coordinate_attention=False, ca_reduction=32):
         super(DLASeg, self).__init__()
         assert down_ratio in [2, 4, 8, 16]
         self.first_level = int(np.log2(down_ratio))
         self.last_level = last_level
-        self.base = globals()[base_name](pretrained=pretrained)
+        self.base = globals()[base_name](
+            pretrained=pretrained,
+            use_coordinate_attention=use_coordinate_attention,
+            ca_reduction=ca_reduction)
         channels = self.base.channels
         scales = [2 ** i for i in range(len(channels[self.first_level:]))]
         self.dla_up = DLAUp(self.first_level, channels[self.first_level:], scales)
@@ -482,12 +526,15 @@ class DLASeg(nn.Module):
         return [z]
     
 
-def get_pose_net(num_layers, heads, head_conv=256, down_ratio=4):
+def get_pose_net(num_layers, heads, head_conv=256, down_ratio=4,
+                 pretrained=False, use_coordinate_attention=False,
+                 ca_reduction=32):
   model = DLASeg('dla{}'.format(num_layers), heads,
-                 pretrained=True,
+                 pretrained=pretrained,
                  down_ratio=down_ratio,
                  final_kernel=1,
                  last_level=5,
-                 head_conv=head_conv)
+                 head_conv=head_conv,
+                 use_coordinate_attention=use_coordinate_attention,
+                 ca_reduction=ca_reduction)
   return model
-

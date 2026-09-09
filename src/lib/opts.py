@@ -58,6 +58,12 @@ class opts(object):
                                   '256 for resnets and 256 for dla.')
     self.parser.add_argument('--down_ratio', type=int, default=4,
                              help='output stride. Currently only supports 4.')
+    self.parser.add_argument('--dla_pretrained', action='store_true',
+                             help='initialize DLA-34 from ImageNet weights')
+    self.parser.add_argument('--use_coordinate_attention', action='store_true',
+                             help='insert Coordinate Attention after DLA levels 0 and 1')
+    self.parser.add_argument('--ca_reduction', type=int, default=32,
+                             help='Coordinate Attention channel reduction ratio')
 
     # input
     self.parser.add_argument('--input_res', type=int, default=-1, 
@@ -119,6 +125,25 @@ class opts(object):
                              help='path to the input video')
     self.parser.add_argument('--output-format', type=str, default='video', help='video or text')
     self.parser.add_argument('--output-root', type=str, default='../demos', help='expected output root path')
+    self.parser.add_argument('--uavs_dataset_root', type=str, default='',
+                             help='UAVSwarm dataset root for track_uavswarm.py')
+    self.parser.add_argument('--uavs_split', type=str, default='test',
+                             choices=('train', 'test'),
+                             help='UAVSwarm split for track_uavswarm.py')
+    self.parser.add_argument('--uavs_result_dir', type=str, default='',
+                             help='MOT result directory for track_uavswarm.py')
+    self.parser.add_argument('--uavs_high_thresh', type=float, default=0.6,
+                             help='high-score threshold in UAVS-MOT association')
+    self.parser.add_argument('--uavs_low_thresh', type=float, default=0.1,
+                             help='low-score threshold in UAVS-MOT association')
+    self.parser.add_argument('--uavs_track_thresh', type=float, default=0.7,
+                             help='new-track score threshold in UAVS-MOT association')
+    self.parser.add_argument('--uavs_iou_gate', type=float, default=0.2,
+                             help='minimum IoU admitted by UAVS-MOT association')
+    self.parser.add_argument('--uavs_high_match_thresh', type=float, default=0.7,
+                             help='maximum fused high-score association cost')
+    self.parser.add_argument('--uavs_app_weight', type=float, default=0.5,
+                             help='appearance weight in the high-score fused cost')
 
     # mot
     self.parser.add_argument('--data_cfg', type=str,
@@ -140,11 +165,15 @@ class opts(object):
     self.parser.add_argument('--wh_weight', type=float, default=0.1,
                              help='loss weight for bounding box size.')
     self.parser.add_argument('--id_loss', default='ce',
-                             help='reid loss: ce | focal')
+                             help='reid loss: ce | focal | arcface')
     self.parser.add_argument('--id_weight', type=float, default=1,
                              help='loss weight for id')
     self.parser.add_argument('--reid_dim', type=int, default=128,
                              help='feature dim for reid')
+    self.parser.add_argument('--arcface_scale', type=float, default=32.0,
+                             help='ArcFace feature scale')
+    self.parser.add_argument('--arcface_margin', type=float, default=0.5,
+                             help='ArcFace angular margin in radians')
     self.parser.add_argument('--ltrb', default=True,
                              help='regress left, top, right, bottom of bbox')
     self.parser.add_argument('--multi_loss', default='uncertainty', help='multi_task loss: uncertainty | fix')
