@@ -39,6 +39,8 @@ def parse_args():
     parser.add_argument('--uavs-split', choices=('train', 'test'), required=True)
     parser.add_argument('--uavs-sequences', type=parse_sequences, required=True)
     parser.add_argument('--uavs-result-dir', type=Path, required=True)
+    parser.add_argument('--uavs-device', choices=('auto', 'cpu', 'mps'), default='auto',
+                        help='execution device for this UAVSwarm adapter; auto keeps FairMOT defaults')
     custom, fairmot_args = parser.parse_known_args()
     return custom, opts().init(fairmot_args)
 
@@ -72,6 +74,7 @@ def main():
     custom, opt = parse_args()
     if not opt.load_model:
         raise ValueError('--load_model is required')
+    opt.device_override = custom.uavs_device
     sequence_root = custom.uavs_dataset_root / custom.uavs_split
     if not sequence_root.is_dir():
         raise FileNotFoundError(sequence_root)

@@ -171,7 +171,14 @@ class STrack(BaseTrack):
 class JDETracker(object):
     def __init__(self, opt, frame_rate=30):
         self.opt = opt
-        if opt.gpus[0] >= 0:
+        device_override = getattr(opt, 'device_override', 'auto')
+        if device_override == 'mps':
+            if not torch.backends.mps.is_available():
+                raise RuntimeError('MPS was requested but is not available')
+            opt.device = torch.device('mps')
+        elif device_override == 'cpu':
+            opt.device = torch.device('cpu')
+        elif opt.gpus[0] >= 0:
             opt.device = torch.device('cuda')
         else:
             opt.device = torch.device('cpu')
