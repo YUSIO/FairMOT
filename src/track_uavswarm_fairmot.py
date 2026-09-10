@@ -43,17 +43,21 @@ def parse_args():
     return custom, opts().init(fairmot_args)
 
 
-def write_results(path, results, min_box_area):
-    with path.open('w') as destination:
-        for frame_id, tracks in results:
-            for track in tracks:
-                tlwh = track.tlwh
-                vertical = tlwh[2] / tlwh[3] > 1.6
-                if tlwh[2] * tlwh[3] <= min_box_area or vertical:
-                    continue
-                destination.write(
-                    '{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},-1,-1,-1\n'.format(
-                        frame_id, track.track_id, tlwh[0], tlwh[1], tlwh[2], tlwh[3], track.score))
+def write_frame(destination, frame_id, tracks, min_box_area):
+    """Write one frame of tracks immediately, like upstream track.py eval_seq.
+
+    ``track.tlwh`` must be read while the frame is current: STrack objects are
+    mutated by the Kalman filter on later frames, so deferring the write would
+    store each track's final state on every row.
+    """
+    for track in tracks:
+        tlwh = track.tlwh
+        vertical = tlwh[2] / tlwh[3] > 1.6
+        if tlwh[2] * tlwh[3] <= min_box_area or vertical:
+            continue
+        destination.write(
+            '{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},-1,-1,-1\n'.format(
+                frame_id, track.track_id, tlwh[0], tlwh[1], tlwh[2], tlwh[3], track.score))
 
 
 def reset_sequence_state(tracker):
@@ -80,13 +84,13 @@ def main():
         if not image_dir.is_dir():
             raise FileNotFoundError(image_dir)
         reset_sequence_state(tracker)
-        results = []
         loader = LoadImages(str(image_dir), opt.img_size)
-        for frame_id, (_, image, image_original) in enumerate(loader, start=1):
-            blob = torch.from_numpy(image).to(opt.device).unsqueeze(0)
-            results.append((frame_id, tracker.update(blob, image_original)))
         output = custom.uavs_result_dir / (sequence_dir.name + '.txt')
-        write_results(output, results, opt.min_box_area)
+        with output.open('w') as destination:
+            for frame_id, (_, image, image_original) in enumerate(loader, start=1):
+                blob = torch.from_numpy(image).to(opt.device).unsqueeze(0)
+                tracks = tracker.update(blob, image_original)
+                write_frame(destination, frame_id, tracks, opt.min_box_area)
         total_frames += len(loader)
         print('{}: {} frames -> {}'.format(sequence_dir.name, len(loader), output))
     print('completed {} sequences and {} frames'.format(len(custom.uavs_sequences), total_frames))
