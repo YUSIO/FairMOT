@@ -63,8 +63,11 @@ def ious(atlbrs, btlbrs):
         return ious
 
     ious = bbox_ious(
-        np.ascontiguousarray(atlbrs, dtype=np.float32),
-        np.ascontiguousarray(btlbrs, dtype=np.float32)
+        # cython_bbox's DTYPE_t is C double.  The upstream code used the
+        # former np.float alias (float64); retain that ABI explicitly under
+        # current NumPy instead of passing float32 buffers.
+        np.ascontiguousarray(atlbrs, dtype=np.float64),
+        np.ascontiguousarray(btlbrs, dtype=np.float64)
     )
 
     return ious
