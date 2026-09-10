@@ -5,6 +5,13 @@ Only ``annotations/train.json`` and the corresponding train images are read.
 The output has the upstream FairMOT ``images``, ``labels_with_ids`` and list
 layout.  The selected source sequences are mapped to a dense global Re-ID
 class range; validation sequences are intentionally excluded.
+
+Sequences are selected by annotation ``video_id`` (the dense 1..36 index of
+``train.json``), while files and directories keep the dataset directory names
+(``UAVSwarm-NN``, odd directories inside the official train split).  The
+``video_id`` to directory mapping is written into the summary so that later
+tracking and evaluation can address sequences by directory name.  A FairMOT
+data-config JSON for ``src/train.py --data_cfg`` is written next to the list.
 """
 
 import argparse
@@ -38,6 +45,8 @@ def main():
     parser.add_argument('--dataset-root', type=Path, required=True)
     parser.add_argument('--output-root', type=Path, required=True)
     parser.add_argument('--sequences', type=parse_sequences, required=True)
+    parser.add_argument('--data-config-name', default='uavswarm_fairmot.json',
+                        help='file name of the generated FairMOT data config')
     args = parser.parse_args()
 
     annotation_path = args.dataset_root / 'annotations' / 'train.json'
@@ -65,10 +74,13 @@ def main():
         directory.mkdir(parents=True, exist_ok=True)
 
     list_lines, box_count = [], 0
+    sequence_directories = defaultdict(set)
     per_sequence = defaultdict(lambda: {'images': 0, 'boxes': 0, 'ids': set()})
     for image_id in sorted(images):
         image = images[image_id]
         relative = Path(image['file_name'])
+        sequence_id = int(image['video_id'])
+        sequence_directories[sequence_id].add(relative.parts[0])
         source_image = args.dataset_root / 'train' / relative
         if not source_image.is_file():
             raise FileNotFoundError(source_image)
@@ -108,17 +120,33 @@ def main():
 
     train_list = list_root / 'uavswarm.train'
     train_list.write_text(''.join(list_lines))
+    directories = {}
+    for sequence_id, names in sorted(sequence_directories.items()):
+        if len(names) != 1:
+            raise ValueError('video_id {} spans directories {}'.format(sequence_id, sorted(names)))
+        directories[str(sequence_id)] = sorted(names)[0]
+    if set(directories) != {str(sequence) for sequence in args.sequences}:
+        raise ValueError('video_id to directory mapping does not cover the selected sequences')
+
+    data_config_path = args.output_root / args.data_config_name
+    data_config_path.write_text(json.dumps({
+        'root': str(args.output_root.resolve()),
+        'train': {'uavswarm': str(train_list.resolve())},
+    }, indent=2, sort_keys=True) + '\n')
     summary = {
         'source_annotation': str(annotation_path),
         'source_annotation_sha256': sha256(annotation_path),
         'sequences': list(args.sequences),
+        'sequence_directories': directories,
         'images': len(images),
         'boxes': box_count,
         'global_identities': len(identity_map),
         'identity_mapping': 'dense index over selected (video_id, track_id)',
         'train_list': str(train_list),
-        'per_sequence': {name: {'images': values['images'], 'boxes': values['boxes'],
-                                'identities': len(values['ids'])}
+        'data_config': str(data_config_path),
+        'data_config_sha256': sha256(data_config_path),
+        'per_sequence': {name: {'directory': directories[name], 'images': values['images'],
+                                'boxes': values['boxes'], 'identities': len(values['ids'])}
                          for name, values in sorted(per_sequence.items(), key=lambda item: int(item[0]))},
     }
     (args.output_root / 'prepare_summary.json').write_text(

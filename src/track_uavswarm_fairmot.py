@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
-"""Run the unmodified upstream JDETracker on selected UAVSwarm sequences."""
+"""Run the unmodified upstream JDETracker on selected UAVSwarm sequences.
+
+Sequences are addressed by their dataset directory name (``UAVSwarm-NN``):
+UAVSwarm V1 numbers the official ``train`` split with odd directories and the
+official ``test`` split with even ones, so the annotation ``video_id`` (a dense
+1..36 index) is *not* a directory number.  Training lists and label files are
+generated from ``file_name`` by ``tools/prepare_uavswarmv1.py`` and therefore
+already carry directory names; this script keeps the same identity.
+"""
 
 import argparse
+import re
 from pathlib import Path
 
 import _init_paths
@@ -13,18 +22,22 @@ from tracker.basetrack import BaseTrack
 from tracker.multitracker import JDETracker
 
 
-def parse_sequence_ids(value):
-    sequence_ids = tuple(sorted({int(item) for item in value.split(',') if item}))
-    if not sequence_ids or any(sequence_id < 1 or sequence_id > 36 for sequence_id in sequence_ids):
-        raise argparse.ArgumentTypeError('sequence IDs must be comma-separated integers in 1..36')
-    return sequence_ids
+SEQUENCE_PATTERN = re.compile(r'^UAVSwarm-\d{2}$')
+
+
+def parse_sequences(value):
+    sequences = tuple(sorted({item for item in value.split(',') if item}))
+    if not sequences or any(not SEQUENCE_PATTERN.match(item) for item in sequences):
+        raise argparse.ArgumentTypeError(
+            'sequences must be comma-separated UAVSwarm-NN directory names')
+    return sequences
 
 
 def parse_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--uavs-dataset-root', type=Path, required=True)
     parser.add_argument('--uavs-split', choices=('train', 'test'), required=True)
-    parser.add_argument('--uavs-sequences', type=parse_sequence_ids, required=True)
+    parser.add_argument('--uavs-sequences', type=parse_sequences, required=True)
     parser.add_argument('--uavs-result-dir', type=Path, required=True)
     custom, fairmot_args = parser.parse_known_args()
     return custom, opts().init(fairmot_args)
@@ -61,8 +74,8 @@ def main():
     custom.uavs_result_dir.mkdir(parents=True, exist_ok=True)
     tracker = JDETracker(opt, frame_rate=30)
     total_frames = 0
-    for sequence_id in custom.uavs_sequences:
-        sequence_dir = sequence_root / 'UAVSwarm-{:02d}'.format(sequence_id)
+    for sequence_name in custom.uavs_sequences:
+        sequence_dir = sequence_root / sequence_name
         image_dir = sequence_dir / 'img1'
         if not image_dir.is_dir():
             raise FileNotFoundError(image_dir)

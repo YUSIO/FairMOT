@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Evaluate selected UAVSwarm sequences with MOT metrics and TrackEval HOTA."""
+"""Evaluate selected UAVSwarm sequences with MOT metrics and TrackEval HOTA.
+
+Sequences are addressed by dataset directory name (``UAVSwarm-NN``); the
+official ``train`` split uses odd directories and the official ``test`` split
+even ones, so the annotation ``video_id`` index must not be used as a directory
+number.
+"""
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -13,6 +20,9 @@ from trackeval.metrics import HOTA
 
 if not hasattr(np, 'asfarray'):
     np.asfarray = lambda values, dtype=float: np.asarray(values, dtype=dtype)
+
+
+SEQUENCE_PATTERN = re.compile(r'^UAVSwarm-\d{2}$')
 
 
 COUNT_FIELDS = {'num_unique_objects', 'mostly_tracked', 'partially_tracked',
@@ -27,10 +37,11 @@ MOT_FIELDS = ['idf1', 'idp', 'idr', 'recall', 'precision',
               'num_predictions']
 
 
-def sequence_ids(value):
-    values = tuple(sorted({int(item) for item in value.split(',') if item}))
-    if not values or any(value < 1 or value > 36 for value in values):
-        raise argparse.ArgumentTypeError('sequence IDs must be comma-separated integers in 1..36')
+def sequence_names(value):
+    values = tuple(sorted({item for item in value.split(',') if item}))
+    if not values or any(not SEQUENCE_PATTERN.match(item) for item in values):
+        raise argparse.ArgumentTypeError(
+            'sequences must be comma-separated UAVSwarm-NN directory names')
     return values
 
 
@@ -38,7 +49,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset-root', type=Path, required=True)
     parser.add_argument('--split', choices=('train', 'test'), required=True)
-    parser.add_argument('--sequence-ids', type=sequence_ids, required=True)
+    parser.add_argument('--sequences', type=sequence_names, required=True)
     parser.add_argument('--tracker-results', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--iou-threshold', type=float, default=0.5)
@@ -124,8 +135,7 @@ def main():
     args = parse_args()
     mm.lap.default_solver = 'lap'
     accumulators, names, hota_by_sequence = [], [], {}
-    for sequence_id in args.sequence_ids:
-        name = 'UAVSwarm-{:02d}'.format(sequence_id)
+    for name in args.sequences:
         sequence_dir = args.dataset_root / args.split / name
         gt_path = sequence_dir / 'gt' / 'gt.txt'
         tracker_path = args.tracker_results / (name + '.txt')
@@ -144,7 +154,7 @@ def main():
         'units': {'rates': 'percent', 'counts': 'events or detections'},
         'protocol': {'clear_and_identity_iou_threshold': args.iou_threshold,
                      'hota_implementation': 'TrackEval 1.1.0 HOTA over IoU thresholds 0.05 through 0.95',
-                     'split': args.split, 'sequence_ids': list(args.sequence_ids)},
+                     'split': args.split, 'sequences': list(args.sequences)},
         'overall': {'motmetrics': serialise_mot_row(mot_summary.loc['OVERALL']),
                     'hota': serialise_hota(hota_metric.combine_sequences(hota_by_sequence), hota_metric)},
         'per_sequence': {name: {'motmetrics': serialise_mot_row(mot_summary.loc[name]),
