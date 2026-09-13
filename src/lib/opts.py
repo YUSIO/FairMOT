@@ -132,6 +132,9 @@ class opts(object):
                              help='UAVSwarm split for track_uavswarm.py')
     self.parser.add_argument('--uavs_result_dir', type=str, default='',
                              help='MOT result directory for track_uavswarm.py')
+    self.parser.add_argument('--uavs_association', type=str, default='byte',
+                             choices=('native', 'byte'),
+                             help='association used by track_uavswarm.py')
     self.parser.add_argument('--uavs_high_thresh', type=float, default=0.6,
                              help='high-score threshold in UAVS-MOT association')
     self.parser.add_argument('--uavs_low_thresh', type=float, default=0.1,

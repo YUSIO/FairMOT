@@ -10,17 +10,24 @@ import torch
 from datasets.dataset.jde import LoadImages
 from opts import opts
 from tracker.basetrack import BaseTrack
-from tracker.multitracker import UAVSMOTTracker
+from tracker.multitracker import JDETracker, UAVSMOTTracker
 
 
-def write_results(path, results):
+def snapshot_tracks(frame_id, tracks):
+    """Copy mutable tracker state into immutable MOT rows for this frame."""
+    rows = []
+    for track in tracks:
+        x, y, width, height = track.tlwh.copy()
+        rows.append((frame_id, track.track_id, x, y, width, height, track.score))
+    return rows
+
+
+def write_results(path, rows):
     with path.open('w') as destination:
-        for frame_id, tracks in results:
-            for track in tracks:
-                x, y, width, height = track.tlwh
-                destination.write(
-                    '{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},-1,-1,-1\n'.format(
-                        frame_id, track.track_id, x, y, width, height, track.score))
+        for frame_id, track_id, x, y, width, height, score in rows:
+            destination.write(
+                '{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},-1,-1,-1\n'.format(
+                    frame_id, track_id, x, y, width, height, score))
 
 
 def reset_sequence_state(tracker):
@@ -40,7 +47,8 @@ def main(opt):
     if not opt.load_model:
         raise ValueError('--load_model is required')
     result_root.mkdir(parents=True, exist_ok=True)
-    tracker = UAVSMOTTracker(opt, frame_rate=30)
+    tracker_class = JDETracker if opt.uavs_association == 'native' else UAVSMOTTracker
+    tracker = tracker_class(opt, frame_rate=30)
     sequence_dirs = sorted(path for path in sequence_root.glob('UAVSwarm-*') if path.is_dir())
     if not sequence_dirs:
         raise FileNotFoundError('no UAVSwarm sequences under ' + str(sequence_root))
@@ -52,7 +60,8 @@ def main(opt):
         loader = LoadImages(str(image_dir), opt.img_size)
         for frame_id, (_, image, image_original) in enumerate(loader, start=1):
             blob = torch.from_numpy(image).to(opt.device).unsqueeze(0)
-            results.append((frame_id, tracker.update(blob, image_original)))
+            results.extend(snapshot_tracks(
+                frame_id, tracker.update(blob, image_original)))
         output = result_root / (sequence_dir.name + '.txt')
         write_results(output, results)
         total_frames += len(loader)
