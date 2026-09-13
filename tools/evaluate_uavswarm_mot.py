@@ -30,6 +30,8 @@ MOT_FIELDS = ['idf1', 'idp', 'idr', 'recall', 'precision',
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset-root', type=Path, required=True)
+    parser.add_argument('--gt-root', type=Path,
+                        help='optional canonical GT root; defaults to dataset-root')
     parser.add_argument('--split', choices=('train', 'test'), default='test')
     parser.add_argument('--tracker-results', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -118,10 +120,11 @@ def main():
     if not sequence_dirs:
         raise FileNotFoundError('no sequences found')
     mm.lap.default_solver = 'lap'
+    gt_root = args.gt_root if args.gt_root is not None else args.dataset_root
     accumulators, names, hota_by_sequence = [], [], {}
     for sequence_dir in sequence_dirs:
         name = sequence_dir.name
-        gt_path = sequence_dir / 'gt' / 'gt.txt'
+        gt_path = gt_root / args.split / name / 'gt' / 'gt.txt'
         tracker_path = args.tracker_results / (name + '.txt')
         if not tracker_path.is_file():
             raise FileNotFoundError('missing tracker result ' + str(tracker_path))
