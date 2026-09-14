@@ -67,9 +67,10 @@ def compare(frames):
 
 
 def paper_lifecycle_tests():
-    def run(scores, paper=True):
+    def run(scores, paper=True, lifecycle=None):
         opt = config()
         opt.uavs_low_recover_lost = paper
+        opt.uavs_fix_lifecycle = paper if lifecycle is None else lifecycle
         BaseTrack._count = 0
         tracker = tracker_without_model(current.UAVSMOTTracker, opt)
         history = []
@@ -93,6 +94,12 @@ def paper_lifecycle_tests():
     _, boundary = run([.7,.7])
     assert all(len(v)==0 for v in boundary)
     run([.8]+[None]*40)
+    _, fixed = run([.8,None,.5,.5,.8], False, True)
+    assert [len(v) for v in fixed] == [1,0,0,0,1]
+    tracker, fixed_expired = run([.8]+[None]*30+[.8,.8],False,True)
+    assert len(fixed_expired[-2])==0 and fixed_expired[-1][0,0]!=fixed_expired[0][0,0]
+    _, fixed_score = run([.8,None,.65],False,True)
+    assert fixed_score[-1][0,-1]==.65
     print('PASS paper: lost-low recovery, score refresh, expiry before match, strict birth threshold, no duplicate lost, cache immutable')
 
 

@@ -573,6 +573,14 @@ class UAVSMOTTracker(JDETracker):
         return [track for track in self.tracked_stracks if track.is_activated]
 
 
+class FixedUAVSMOTTracker(UAVSMOTTracker):
+    """Repair lifecycle invariants without expanding low-score association."""
+    def __init__(self, opt, frame_rate=30):
+        opt.uavs_low_recover_lost = False
+        opt.uavs_fix_lifecycle = True
+        super().__init__(opt, frame_rate=frame_rate)
+
+
 class PaperUAVSMOTTracker(UAVSMOTTracker):
     """Section-1.5 interpretation; not the unpublished authors' implementation.
 
@@ -580,6 +588,7 @@ class PaperUAVSMOTTracker(UAVSMOTTracker):
     """
     def __init__(self, opt, frame_rate=30):
         opt.uavs_low_recover_lost = True
+        opt.uavs_fix_lifecycle = True
         super().__init__(opt, frame_rate=frame_rate)
 
 

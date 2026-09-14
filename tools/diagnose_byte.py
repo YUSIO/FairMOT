@@ -213,9 +213,9 @@ def replay(args):
     summary = {'scope': 'diagnostic frame-IoU events, not formal MOT metrics', 'variants': {}}
     for variant in variants:
         cls = JDETracker if variant == 'native' else UAVSMOTTracker
-        assert variant in ('native', 'legacy', 'lost_only', 'paper')
+        assert variant in ('native', 'legacy', 'lifecycle', 'lost_only', 'paper')
         opt.uavs_low_recover_lost = variant in ('lost_only', 'paper')
-        opt.uavs_fix_lifecycle = variant == 'paper'
+        opt.uavs_fix_lifecycle = variant in ('lifecycle', 'paper')
         folder = args.output / variant
         (folder / 'tracks').mkdir(parents=True)
         totals, per_sequence = Counter(), {}
