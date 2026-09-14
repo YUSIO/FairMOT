@@ -47,7 +47,9 @@ def main(opt):
     if not opt.load_model:
         raise ValueError('--load_model is required')
     result_root.mkdir(parents=True, exist_ok=True)
-    tracker_class = JDETracker if opt.uavs_association == 'native' else UAVSMOTTracker
+    from tracker.multitracker import PaperUAVSMOTTracker
+    tracker_class = {'native': JDETracker, 'byte': UAVSMOTTracker,
+                     'byte_paper': PaperUAVSMOTTracker}[opt.uavs_association]
     tracker = tracker_class(opt, frame_rate=30)
     sequence_dirs = sorted(path for path in sequence_root.glob('UAVSwarm-*') if path.is_dir())
     if not sequence_dirs:

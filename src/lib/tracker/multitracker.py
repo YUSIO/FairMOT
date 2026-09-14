@@ -437,6 +437,9 @@ class UAVSMOTTracker(JDETracker):
                 activated.append(track)
             else:
                 track.re_activate(detection, self.frame_id, new_id=False)
+                if getattr(self.opt, 'uavs_fix_lifecycle',
+                           getattr(self.opt, 'uavs_low_recover_lost', False)):
+                    track.score = detection.score
                 refound.append(track)
 
     def update(self, im_blob, img0):
@@ -456,6 +459,16 @@ class UAVSMOTTracker(JDETracker):
         # fed back from the evaluator. The original matching policy is unchanged.
         trace = {'frame': self.frame_id, 'detections': [], 'stages': []}
         self.last_trace = trace
+        recover_lost = getattr(self.opt, 'uavs_low_recover_lost', False)
+        paper_mode = getattr(self.opt, 'uavs_fix_lifecycle', recover_lost)
+        if paper_mode:
+            # Expired tracks must not participate in this frame's association.
+            for track in self.lost_stracks:
+                if self.frame_id - track.end_frame > self.max_time_lost:
+                    track.mark_removed()
+                    removed.append(track)
+            self.lost_stracks = sub_stracks(self.lost_stracks, removed)
+            trace['expired_before_matching'] = [t.track_id for t in removed]
         for index, detection in enumerate(detections):
             detection.diagnostic_index = index
             trace['detections'].append({'index': index, 'box': detection.tlbr.tolist(),
@@ -499,9 +512,10 @@ class UAVSMOTTracker(JDETracker):
         trace['high_appearance_cost'] = app_cost.tolist()
         self._update_matched(matches, pool, high_detections, activated, refound)
 
-        # Stage 2: unmatched tracked tracks accept low-score detections by IoU.
+        # Paper section 1.5: low-score boxes match the remaining first-stage
+        # pool, including unexpired lost tracks. Keep the old mode replayable.
         remaining_tracked = [pool[index] for index in unmatched_pool
-                             if pool[index].state == TrackState.Tracked]
+                             if recover_lost or pool[index].state == TrackState.Tracked]
         iou_cost = matching.iou_distance(remaining_tracked, low_detections)
         matches, unmatched_tracked, _ = matching.linear_assignment(
             iou_cost, thresh=1.0 - self.opt.uavs_iou_gate)
@@ -510,8 +524,9 @@ class UAVSMOTTracker(JDETracker):
                              activated, refound)
         for index in unmatched_tracked:
             track = remaining_tracked[index]
-            track.mark_lost()
-            newly_lost.append(track)
+            if track.state == TrackState.Tracked:
+                track.mark_lost()
+                newly_lost.append(track)
 
         # FairMOT/Byte confirmation: only remaining high-score detections can
         # confirm a one-frame tentative track; low-score detections never birth.
@@ -530,7 +545,9 @@ class UAVSMOTTracker(JDETracker):
 
         for index in unmatched_high:
             track = remaining_high[index]
-            if track.score >= self.opt.uavs_track_thresh:
+            birth_allowed = (track.score > self.opt.uavs_track_thresh if paper_mode
+                             else track.score >= self.opt.uavs_track_thresh)
+            if birth_allowed:
                 track.activate(self.kalman_filter, self.frame_id)
                 activated.append(track)
                 trace.setdefault('births', []).append(track.diagnostic_index)
@@ -548,11 +565,22 @@ class UAVSMOTTracker(JDETracker):
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refound)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(newly_lost)
-        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
+        self.lost_stracks = sub_stracks(
+            self.lost_stracks, self.removed_stracks + (removed if paper_mode else []))
         self.removed_stracks.extend(removed)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(
             self.tracked_stracks, self.lost_stracks)
         return [track for track in self.tracked_stracks if track.is_activated]
+
+
+class PaperUAVSMOTTracker(UAVSMOTTracker):
+    """Section-1.5 interpretation; not the unpublished authors' implementation.
+
+    Fusion and tentative confirmation still use the documented local choices.
+    """
+    def __init__(self, opt, frame_rate=30):
+        opt.uavs_low_recover_lost = True
+        super().__init__(opt, frame_rate=frame_rate)
 
 
 def joint_stracks(tlista, tlistb):

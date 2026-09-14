@@ -201,12 +201,20 @@ def audit_frame(gt, dets, raw, outputs, trace):
 def replay(args):
     opt = config()
     manifest = json.loads((args.cache / 'cache_manifest.json').read_text())
-    assert manifest.get('complete')
+    if args.sequences:
+        wanted = args.sequences.split(',')
+        assert all(seq in manifest['sequences'] for seq in wanted)
+        manifest['sequences'] = {seq: manifest['sequences'][seq] for seq in wanted}
+    else:
+        assert manifest.get('complete')
+    write_json(args.output / 'cache_snapshot.json', manifest)
     variants = args.variants.split(',')
     summary = {'scope': 'diagnostic frame-IoU events, not formal MOT metrics', 'variants': {}}
     for variant in variants:
         cls = JDETracker if variant == 'native' else UAVSMOTTracker
-        opt.uavs_low_recover_lost = variant == 'paper'
+        assert variant in ('native', 'legacy', 'lost_only', 'paper')
+        opt.uavs_low_recover_lost = variant in ('lost_only', 'paper')
+        opt.uavs_fix_lifecycle = variant == 'paper'
         folder = args.output / variant
         (folder / 'tracks').mkdir(parents=True)
         totals, per_sequence = Counter(), {}
@@ -255,7 +263,7 @@ def main():
     p.add_argument('--sequences')
     p.add_argument('--max-frames', type=int)
     p.add_argument('--cache', type=Path)
-    p.add_argument('--variants', default='native,legacy,paper')
+    p.add_argument('--variants', default='native,legacy,lost_only,paper')
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     class Tee:
