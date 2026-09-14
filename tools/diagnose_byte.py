@@ -222,7 +222,9 @@ def replay(args):
         for seq, info in manifest['sequences'].items():
             path = args.cache / (seq + '.npz')
             assert sha(path) == info['sha256']
-            cache = np.load(path)
+            with np.load(path) as archive:
+                # NPZ indexing decompresses every access: load each array once.
+                cache = {key: archive[key] for key in ('starts', 'dets', 'features', 'raw_dets')}
             gt = read_gt(args.dataset, manifest['split'], seq)
             BaseTrack._count = 0
             tracker = tracker_without_model(cls, opt)
