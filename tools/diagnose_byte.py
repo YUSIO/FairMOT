@@ -21,6 +21,7 @@ from opts import opts
 from tracker.basetrack import BaseTrack
 from tracker.multitracker import JDETracker, UAVSMOTTracker
 from tracking_utils.kalman_filter import KalmanFilter
+logging.disable(logging.DEBUG)
 
 
 def sha(path):
