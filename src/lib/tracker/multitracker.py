@@ -225,13 +225,7 @@ class JDETracker(object):
                 results[j] = results[j][keep_inds]
         return results
 
-    def update(self, im_blob, img0):
-        self.frame_id += 1
-        activated_starcks = []
-        refind_stracks = []
-        lost_stracks = []
-        removed_stracks = []
-
+    def decode_arrays(self, im_blob, img0):
         width = img0.shape[1]
         height = img0.shape[0]
         inp_height = im_blob.shape[2]
@@ -258,6 +252,16 @@ class JDETracker(object):
 
         dets = self.post_process(dets, meta)
         dets = self.merge_outputs([dets])[1]
+        return dets, id_feature
+
+    def update(self, im_blob, img0):
+        return self.update_detections(*self.decode_arrays(im_blob, img0))
+
+    def update_detections(self, dets, id_feature):
+        """Replay frozen decoded boxes and aligned embeddings, without inference."""
+        self.frame_id += 1
+        activated_starcks, refind_stracks, lost_stracks, removed_stracks = [], [], [], []
+        dets, id_feature = dets.copy(), id_feature.copy()
 
         remain_inds = dets[:, 4] > self.opt.conf_thres
         dets = dets[remain_inds]
@@ -436,9 +440,26 @@ class UAVSMOTTracker(JDETracker):
                 refound.append(track)
 
     def update(self, im_blob, img0):
+        return self._update_stracks(self._decode_detections(im_blob, img0))
+
+    def update_detections(self, dets, id_feature):
+        """Consume the same immutable detection cache as the native tracker."""
+        detections = [STrack(STrack.tlbr_to_tlwh(box[:4]), box[4], feature.copy(), 30)
+                      for box, feature in zip(dets, id_feature)
+                      if box[4] > self.opt.uavs_low_thresh]
+        return self._update_stracks(detections)
+
+    def _update_stracks(self, detections):
         self.frame_id += 1
         activated, refound, newly_lost, removed = [], [], [], []
-        detections = self._decode_detections(im_blob, img0)
+        # Optional diagnostics store pre-mutation values, never GT or decisions
+        # fed back from the evaluator. The original matching policy is unchanged.
+        trace = {'frame': self.frame_id, 'detections': [], 'stages': []}
+        self.last_trace = trace
+        for index, detection in enumerate(detections):
+            detection.diagnostic_index = index
+            trace['detections'].append({'index': index, 'box': detection.tlbr.tolist(),
+                                        'score': float(detection.score)})
         high_detections = [det for det in detections
                            if det.score > self.opt.uavs_high_thresh]
         low_detections = [det for det in detections
@@ -451,6 +472,19 @@ class UAVSMOTTracker(JDETracker):
 
         pool = joint_stracks(tracked, self.lost_stracks)
         STrack.multi_predict(pool)
+        trace['pool'] = [{'id': t.track_id, 'state': t.state,
+                          'box': t.tlbr.tolist()} for t in pool]
+        trace['unconfirmed'] = [{'id': t.track_id, 'box': t.tlbr.tolist()}
+                                for t in unconfirmed]
+
+        def record(stage, tracks, candidates, costs, matches):
+            trace['stages'].append({'stage': stage,
+                'track_ids': [t.track_id for t in tracks],
+                'track_states': [t.state for t in tracks],
+                'det_indices': [d.diagnostic_index for d in candidates],
+                'costs': [[float(v) if np.isfinite(v) else None for v in row]
+                          for row in costs],
+                'matches': [[int(a), int(b)] for a, b in matches]})
 
         # Stage 1: high-score detections; ReID and IoU are jointly used.
         iou_cost = matching.iou_distance(pool, high_detections)
@@ -460,6 +494,9 @@ class UAVSMOTTracker(JDETracker):
         fused_cost[iou_cost > 1.0 - self.opt.uavs_iou_gate] = np.inf
         matches, unmatched_pool, unmatched_high = matching.linear_assignment(
             fused_cost, thresh=self.opt.uavs_high_match_thresh)
+        record('high', pool, high_detections, fused_cost, matches)
+        trace['high_iou_cost'] = iou_cost.tolist()
+        trace['high_appearance_cost'] = app_cost.tolist()
         self._update_matched(matches, pool, high_detections, activated, refound)
 
         # Stage 2: unmatched tracked tracks accept low-score detections by IoU.
@@ -468,6 +505,7 @@ class UAVSMOTTracker(JDETracker):
         iou_cost = matching.iou_distance(remaining_tracked, low_detections)
         matches, unmatched_tracked, _ = matching.linear_assignment(
             iou_cost, thresh=1.0 - self.opt.uavs_iou_gate)
+        record('low', remaining_tracked, low_detections, iou_cost, matches)
         self._update_matched(matches, remaining_tracked, low_detections,
                              activated, refound)
         for index in unmatched_tracked:
@@ -481,6 +519,7 @@ class UAVSMOTTracker(JDETracker):
         iou_cost = matching.iou_distance(unconfirmed, remaining_high)
         matches, unmatched_unconfirmed, unmatched_high = matching.linear_assignment(
             iou_cost, thresh=1.0 - self.opt.uavs_iou_gate)
+        record('confirmation', unconfirmed, remaining_high, iou_cost, matches)
         for track_index, det_index in matches:
             unconfirmed[track_index].update(remaining_high[det_index], self.frame_id)
             activated.append(unconfirmed[track_index])
@@ -494,6 +533,9 @@ class UAVSMOTTracker(JDETracker):
             if track.score >= self.opt.uavs_track_thresh:
                 track.activate(self.kalman_filter, self.frame_id)
                 activated.append(track)
+                trace.setdefault('births', []).append(track.diagnostic_index)
+            else:
+                trace.setdefault('birth_rejected', []).append(track.diagnostic_index)
 
         for track in self.lost_stracks:
             if self.frame_id - track.end_frame > self.max_time_lost:
