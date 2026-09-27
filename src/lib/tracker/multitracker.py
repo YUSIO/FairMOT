@@ -301,10 +301,17 @@ class JDETracker(object):
         #for strack in strack_pool:
             #strack.predict()
         STrack.multi_predict(strack_pool)
-        dists = matching.embedding_distance(strack_pool, detections)
-        #dists = matching.iou_distance(strack_pool, detections)
+        # Defaults reproduce upstream FairMOT; 'iou' is the upstream commented-out alternative.
+        first_stage_cost = getattr(self.opt, 'first_stage_cost', 'embedding')
+        if first_stage_cost == 'embedding':
+            dists = matching.embedding_distance(strack_pool, detections)
+        elif first_stage_cost == 'iou':
+            dists = matching.iou_distance(strack_pool, detections)
+        else:
+            raise ValueError('unknown first_stage_cost: ' + str(first_stage_cost))
         dists = matching.fuse_motion(self.kalman_filter, dists, strack_pool, detections)
-        matches, u_track, u_detection = matching.linear_assignment(dists, thresh=0.4)
+        matches, u_track, u_detection = matching.linear_assignment(
+            dists, thresh=getattr(self.opt, 'first_stage_thresh', 0.4))
 
         for itracked, idet in matches:
             track = strack_pool[itracked]

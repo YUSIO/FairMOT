@@ -118,6 +118,10 @@ class opts(object):
     self.parser.add_argument('--conf_thres', type=float, default=0.4, help='confidence thresh for tracking')
     self.parser.add_argument('--det_thres', type=float, default=0.3, help='confidence thresh for detection')
     self.parser.add_argument('--nms_thres', type=float, default=0.4, help='iou thresh for nms')
+    self.parser.add_argument('--first_stage_cost', default='embedding', choices=['embedding', 'iou'],
+                             help='JDETracker first-stage cost; embedding is upstream FairMOT')
+    self.parser.add_argument('--first_stage_thresh', type=float, default=0.4,
+                             help='JDETracker first-stage assignment threshold (upstream 0.4)')
     self.parser.add_argument('--track_buffer', type=int, default=30, help='tracking buffer')
     self.parser.add_argument('--min-box-area', type=float, default=100, help='filter out tiny boxes')
     self.parser.add_argument('--input-video', type=str,
