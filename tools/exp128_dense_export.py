@@ -27,6 +27,22 @@ SCORE_FLOOR = .01
 TOP_K = 2000
 
 
+def code_identity(repo):
+    """(commit, tracked_dirty, source). A git checkout reports HEAD and `git status`; a `git archive` export on a server
+    (no .git) reports the SHA in EXPORTED_COMMIT and is dirty when a file listed in EXPORT_FILES.sha256 no longer matches."""
+    repo = Path(repo)
+    if (repo / '.git').exists():
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+        dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=repo, text=True).strip())
+        return commit, dirty, 'git'
+    commit = (repo / 'EXPORTED_COMMIT').read_text().split()[0]
+    listing, dirty = repo / 'EXPORT_FILES.sha256', None
+    if listing.exists():
+        entries = [line.split(None, 1) for line in listing.read_text().splitlines() if line.strip()]
+        dirty = any(sha(repo / name.strip()) != digest for digest, name in entries)
+    return commit, dirty, 'export'
+
+
 def load_model(checkpoint, device):
     opt = native_config(['--K', str(TOP_K)])
     model = create_model(opt.arch, opt.heads, opt.head_conv)
@@ -101,10 +117,9 @@ def main():
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)  # never reuse an output directory
     repo = Path(__file__).resolve().parents[1]
-    dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=repo, text=True).strip()
-    write_json(args.output / 'execution.json', {'argv': sys.argv, 'python': sys.executable,
-        'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
-        'tracked_dirty': bool(dirty), 'status': 'running'})
+    commit, dirty, source = code_identity(repo)
+    write_json(args.output / 'execution.json', {'argv': sys.argv, 'python': sys.executable, 'code_commit': commit,
+        'tracked_dirty': dirty, 'code_source': source, 'status': 'running'})
     try:
         export(args)
     except BaseException:
