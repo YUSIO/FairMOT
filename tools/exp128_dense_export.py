@@ -25,6 +25,12 @@ from models.model import create_model
 
 SCORE_FLOOR = .01
 TOP_K = 2000
+# cuDNN convolutions default to TF32 on Ampere and newer GPUs, which moves sigmoid scores by up to 5e-3 relative to the
+# fp32 Exp035 caches (measured on an RTX 4090 against the MPS-made cache; with TF32 off the difference is 1e-5). Exp128's
+# regression check P0 and Exp129's fp32 protocol both assume plain fp32, so the flags are switched off for this tool and for
+# every tool that imports it.
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cuda.matmul.allow_tf32 = False
 
 
 def code_identity(repo):
