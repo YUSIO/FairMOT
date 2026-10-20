@@ -127,8 +127,7 @@ def main():
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[1]
-    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
-    dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=repo, text=True).strip())
+    commit, dirty, code_source = E.code_identity(repo)
     torch.manual_seed(SEED)
     _, model, state, _ = E.load_model(a.backbone, a.device)
     for prm in model.parameters():
@@ -174,7 +173,7 @@ def main():
         'head_parameters': n_params, 'head_sha256': digest, 'iterations': a.iterations, 'seed': SEED, 'use_template': not a.no_template,
         'backbone': str(a.backbone), 'backbone_sha256': hashlib.sha256(a.backbone.read_bytes()).hexdigest(),
         'train_sequences': a.train_sequences.split(','), 'monitor_sequences': a.monitor_sequences.split(','),
-        'code_commit': commit, 'tracked_dirty': dirty, 'torch': torch.__version__, 'device': a.device,
+        'code_commit': commit, 'tracked_dirty': dirty, 'code_source': code_source, 'torch': torch.__version__, 'device': a.device,
         'final_monitor': m if a.iterations else None}, indent=2) + '\n')
     tb.close()
 

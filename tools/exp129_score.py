@@ -142,7 +142,7 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     meta = {'slots': str(a.slots), 'slots_sha256': hashlib.sha256(a.slots.read_bytes()).hexdigest(), 'backbone_sha256': hashlib.sha256(a.backbone.read_bytes()).hexdigest(),
             'heads': {k: hashlib.sha256(Path(s.split('=')[1]).read_bytes()).hexdigest() for k, s in zip(heads, a.head)},
-            'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(), 'arms': sorted(res), 'seed': SEED}
+            'code_commit': E.code_identity(repo)[0], 'tracked_dirty': E.code_identity(repo)[1], 'arms': sorted(res), 'seed': SEED}
     a.out.with_suffix('.json').write_text(json.dumps(meta, indent=2) + '\n')
 
 
